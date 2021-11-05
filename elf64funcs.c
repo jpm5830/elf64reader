@@ -1,13 +1,14 @@
 //
 // Created by jpm on 10/31/21.
 //
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
 #include "elf64funcs.h"
 
-#define SH_CAPACITY 80
+#define SH_CAPACITY 80 // max number of section headers allowed
 
 // GLOBALS
 Elf64_Shdr section[SH_CAPACITY];
@@ -41,6 +42,12 @@ int fh_read(const char *fname) {
         fprintf(stderr, "File is not a 64 bit ELF file\n");
         return EXIT_FAILURE;
     }
+    // Check there is enough capacity in section to hold all section headers
+    if (file_hdr.e_shnum > SH_CAPACITY) {
+        fprintf(stderr, "Not enough section header capacity for this file.\n");
+        fprintf(stderr, "Needed: %u, Available: %u\n", file_hdr.e_shnum, SH_CAPACITY);
+        return EXIT_FAILURE;
+    }
     // Set file offset to section header name string table
     set_sh_name_str_tab_off();
     return EXIT_SUCCESS;
@@ -53,7 +60,7 @@ int set_sh_name_str_tab_off() {
     // Seek to offset of section header string table
     shstrtab_off = file_hdr.e_shoff + file_hdr.e_shentsize * file_hdr.e_shstrndx;
 
-    // todo: fseeko or fseek() and check shstrtab_off size <= LONG_MAX
+    // Note narrowing conversion from unsigned long to long for param shstrtab_off
     if (fseek(fp, shstrtab_off, SEEK_SET) != 0) {
         fprintf(stderr, "ERROR: Seeking to start of shstrtab_off (%lux) in function '%s'\n",
                 shstrtab_off, __FUNCTION__);
@@ -186,6 +193,7 @@ int sh_read(int n, Elf64_Shdr *shp) {
 
     start_off = file_hdr.e_shoff + file_hdr.e_shentsize * n;
     // Read and store section n header info
+    // Note narrowing conversion from unsigned long to long for param start_off
     if (fseek(fp, start_off, SEEK_SET) != 0) {
         fprintf(stderr, "ERROR: Seeking to start of section %d, (%lx) in function '%s'.\n",
                 n, start_off, __FUNCTION__);
@@ -216,10 +224,12 @@ void sh_print(int n) {
     static int section_header_printed = 0;
     char sname[20] = {0};
 
+    // Only print the header (hdr) once for all section headers
     if (!section_header_printed) {
         printf("%s\n", hdr);
         section_header_printed++;
     }
+    // Note narrowing conversion from unsigned long to long for param sh_name_str_tab_off
     fseek(fp, sh_name_str_tab_off + section[n].sh_name, SEEK_SET);
     fgets(sname, sizeof(sname), fp);
     printf("[%-2d] %-16s  ", n, sname); // section number and name

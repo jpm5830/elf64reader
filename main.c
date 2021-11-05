@@ -1,10 +1,12 @@
+//
+// Created by jpm on 10/31/21.
+//
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <getopt.h>
 #include "elf64funcs.h"
-
-#define SH_CAPACITY 80 // max number of section headers allowed
 
 extern FILE *fp;
 
