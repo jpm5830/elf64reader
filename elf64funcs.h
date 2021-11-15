@@ -8,19 +8,23 @@
 
 #include <elf.h>
 
+#define SH_CAPACITY 80 // max number of section headers allowed
+
+// GLOBAL VARIABLES
+extern Elf64_Shdr section[SH_CAPACITY];
+extern char *section_names[SH_CAPACITY];
+
 // FUNCTION DECLARATIONS
-int fh_read(const char *fname);
+int elf64funcs_init(const char *fname); // call this function before using any others
 
-int fh_print();
+void elf64funcs_close(); // call this function last. Cleans up any dynamically allocated  memory
 
-int sh_read(int n, Elf64_Shdr *shp);
+int print_file_header();
 
-int sh_readall();
+void print_section_headers();
 
-void sh_print(int n);
+void print_section_names();
 
-void sh_printall();
-
-int set_sh_name_str_tab_off();
+int get_section_num_by_name(const char *sn);
 
 #endif //ELF64FUNCS_H

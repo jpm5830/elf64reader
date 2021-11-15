@@ -8,61 +8,31 @@
 #include <string.h>
 #include "elf64funcs.h"
 
-#define SH_CAPACITY 80 // max number of section headers allowed
-
-// GLOBALS
+// GLOBAL VARIABLES
 Elf64_Shdr section[SH_CAPACITY];
+char *section_names[SH_CAPACITY];
 FILE *fp = NULL;
 
 extern const char *progname;
 static Elf64_Ehdr file_hdr; // elf file header struct
-static Elf64_Off sh_name_str_tab_off; // section header name string table offset
+static long sh_name_str_tab_off; // section header name string table offset
 
-
-int fh_read(const char *fname) {
-    const char magic[4] = "\177ELF";
-    size_t cr; // chars read
-
-    assert(fname != NULL);
-
-    // Attempt to open the file
-    if ((fp = fopen(fname, "r")) == NULL) {
-        fprintf(stderr, "Couldn't open file '%s'\n", fname);
-        exit(EXIT_FAILURE);
-    }
-    // Attempt to read in the file header
-    rewind(fp);
-    if ((cr = fread(&file_hdr, 1, sizeof(Elf64_Ehdr), fp)) != sizeof(Elf64_Ehdr)) {
-        fprintf(stderr, "Error reading elf header: %lu chars read, %lu chars expected\n",
-                cr, sizeof(Elf64_Ehdr));
-        return EXIT_FAILURE;
-    }
-    // Check that this is a 64 bit ELF file
-    if ((memcmp(&file_hdr, magic, sizeof(magic)) != 0) || (file_hdr.e_ident[EI_CLASS] != ELFCLASS64)) {
-        fprintf(stderr, "File is not a 64 bit ELF file\n");
-        return EXIT_FAILURE;
-    }
-    // Check there is enough capacity in section to hold all section headers
-    if (file_hdr.e_shnum > SH_CAPACITY) {
-        fprintf(stderr, "Not enough section header capacity for this file.\n");
-        fprintf(stderr, "Needed: %u, Available: %u\n", file_hdr.e_shnum, SH_CAPACITY);
-        return EXIT_FAILURE;
-    }
-    // Set file offset to section header name string table
-    set_sh_name_str_tab_off();
-    return EXIT_SUCCESS;
-}
-
-int set_sh_name_str_tab_off() {
-    Elf64_Off shstrtab_off;
+static int set_sh_name_str_tab_off() {
+    unsigned long ul;
+    long shstrtab_off;
     Elf64_Shdr shdr;
 
     // Seek to offset of section header string table
-    shstrtab_off = file_hdr.e_shoff + file_hdr.e_shentsize * file_hdr.e_shstrndx;
+    ul = file_hdr.e_shoff + file_hdr.e_shentsize * file_hdr.e_shstrndx;
+    if (ul & 0x8000000000000000) { // unsigned val has sign bit set
+        fprintf(stderr, "ERROR: Bad conversion of unsigned long to long detected in function '%s'\n",
+                __FUNCTION__);
+        return EXIT_FAILURE;
+    }
+    shstrtab_off = (long) ul; // safe cast
 
-    // Note narrowing conversion from unsigned long to long for param shstrtab_off
     if (fseek(fp, shstrtab_off, SEEK_SET) != 0) {
-        fprintf(stderr, "ERROR: Seeking to start of shstrtab_off (%lux) in function '%s'\n",
+        fprintf(stderr, "ERROR: Seeking to start of shstrtab_off (%lx) in function '%s'\n",
                 shstrtab_off, __FUNCTION__);
         return EXIT_FAILURE;
     }
@@ -73,11 +43,60 @@ int set_sh_name_str_tab_off() {
                 file_hdr.e_shstrndx, __FUNCTION__);
         return EXIT_FAILURE;
     }
-    sh_name_str_tab_off = shdr.sh_offset;
+
+    if (shdr.sh_offset & 0x8000000000000000) { // unsigned val has sign bit set
+        fprintf(stderr, "ERROR: Bad conversion of unsigned long to long detected in function '%s'\n",
+                __FUNCTION__);
+        return EXIT_FAILURE;
+    }
+
+    sh_name_str_tab_off = (long) shdr.sh_offset; // safe cast
     return EXIT_SUCCESS;
 }
 
-int fh_print() {
+// caller needs to free returned pointer
+static char *get_section_name(int n) {
+    int name_len = 0;
+    long name_off;
+    char *cp = NULL;
+
+    name_off = sh_name_str_tab_off + section[n].sh_name;
+    fseek(fp, name_off, SEEK_SET);
+    while (fgetc(fp) != '\0')
+        name_len++;
+    fseek(fp, name_off, SEEK_SET);
+    name_len++; // increase space needed for '\0'
+    cp = (char *) malloc(name_len);
+    fgets(cp, name_len, fp);
+    return cp;
+}
+
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "DanglingPointer"
+
+static void set_section_names() {
+    char *cp = NULL;
+
+    for (int n = 0; n < file_hdr.e_shnum; n++) {
+        if ((cp = get_section_name(n))) {
+            section_names[n] = cp; // save it to global array
+        }
+    }
+}
+
+#pragma clang diagnostic pop
+
+int get_section_num_by_name(const char *sn) {
+    if (!sn) // index 0 has no name
+        return 0;
+    for (int i = 0; i < file_hdr.e_shnum; i++) {
+        if (!strncmp(sn, section_names[i], strlen(sn)))
+            return i;
+    }
+    return -1; // on failure to find sn
+}
+
+int print_file_header() {
 
     printf("\nELF FILE HEADER\n");
     printf("---------------\n");
@@ -181,8 +200,9 @@ int fh_print() {
     return (EXIT_SUCCESS);
 }
 
-int sh_read(int n, Elf64_Shdr *shp) {
-    Elf64_Off start_off;
+static int sh_read(int n, Elf64_Shdr *shp) {
+    long start_off;
+    unsigned long ul;
 
     // n should be between 0 and number of sections - 1, check it
     if ((n < 0) || (n >= file_hdr.e_shnum)) {
@@ -191,7 +211,14 @@ int sh_read(int n, Elf64_Shdr *shp) {
         return EXIT_FAILURE;
     }
 
-    start_off = file_hdr.e_shoff + file_hdr.e_shentsize * n;
+    ul = file_hdr.e_shoff + file_hdr.e_shentsize * n;
+    if (ul & 0x8000000000000000) { // unsigned val has sign bit set
+        fprintf(stderr, "ERROR: Bad conversion of unsigned long to long detected in function '%s'\n",
+                __FUNCTION__);
+        return EXIT_FAILURE;
+    }
+    start_off = (long) ul; // safe cast
+
     // Read and store section n header info
     // Note narrowing conversion from unsigned long to long for param start_off
     if (fseek(fp, start_off, SEEK_SET) != 0) {
@@ -207,7 +234,7 @@ int sh_read(int n, Elf64_Shdr *shp) {
     return EXIT_SUCCESS;
 }
 
-int sh_readall() {
+static int sh_readall() {
     int rc;
     for (int n = 0; n < file_hdr.e_shnum; n++) {
         if ((rc = sh_read(n, &(section[n]))) == EXIT_FAILURE) {
@@ -217,22 +244,34 @@ int sh_readall() {
     return EXIT_SUCCESS;
 }
 
-void sh_print(int n) {
+static void sh_print(int n) {
     char *hdr = "\nSection Headers:\n"
                 "[Nr] Name              Type             Address           Offset\n"
                 "     Size              EntSize          Flags  Link  Info  Align";
     static int section_header_printed = 0;
-    char sname[20] = {0};
+    char *section_name = NULL;
 
     // Only print the header (hdr) once for all section headers
     if (!section_header_printed) {
         printf("%s\n", hdr);
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "UnusedValue"
         section_header_printed++;
+#pragma clang diagnostic pop
     }
-    // Note narrowing conversion from unsigned long to long for param sh_name_str_tab_off
-    fseek(fp, sh_name_str_tab_off + section[n].sh_name, SEEK_SET);
-    fgets(sname, sizeof(sname), fp);
-    printf("[%-2d] %-16s  ", n, sname); // section number and name
+
+    // todo: Error check the function below
+    if ((section_name = get_section_name(n)) != NULL) {
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "DanglingPointer"
+        printf("[%-2d] %-16s  ", n, section_name); // section number and name
+        free(section_name);
+#pragma clang diagnostic pop
+
+        section_name = NULL;
+    } else
+        fprintf(stderr, "WARNING: section name error.\n");
+
     // Section type
     switch (section[n].sh_type) {
         case SHT_NULL   :
@@ -355,7 +394,56 @@ void sh_print(int n) {
     printf("%16lu\n", section[n].sh_addralign);
 }
 
-void sh_printall() {
+void print_section_headers() {
     for (int n = 0; n < file_hdr.e_shnum; n++)
         sh_print(n);
+}
+
+void print_section_names() {
+    for (int n = 0; n < file_hdr.e_shnum; n++) {
+        printf("[%2d]: %s\n", n, section_names[n]);
+    }
+}
+
+void elf64funcs_close() {
+    for (int i = 0; i < file_hdr.e_shnum; i++) {
+        free(section_names[i]);
+        section_names[i] = NULL;
+    }
+}
+
+int elf64funcs_init(const char *fname) {
+    const char magic[4] = "\177ELF";
+    size_t cr; // chars read
+
+    assert(fname != NULL);
+
+    // Attempt to open the file
+    if ((fp = fopen(fname, "r")) == NULL) {
+        fprintf(stderr, "Couldn't open file '%s'\n", fname);
+        exit(EXIT_FAILURE);
+    }
+    // Attempt to read in the file header
+    rewind(fp);
+    if ((cr = fread(&file_hdr, 1, sizeof(Elf64_Ehdr), fp)) != sizeof(Elf64_Ehdr)) {
+        fprintf(stderr, "Error reading elf header: %lu chars read, %lu chars expected\n",
+                cr, sizeof(Elf64_Ehdr));
+        return EXIT_FAILURE;
+    }
+    // Check that this is a 64 bit ELF file
+    if ((memcmp(&file_hdr, magic, sizeof(magic)) != 0) || (file_hdr.e_ident[EI_CLASS] != ELFCLASS64)) {
+        fprintf(stderr, "File is not a 64 bit ELF file\n");
+        return EXIT_FAILURE;
+    }
+    // Check there is enough capacity in section to hold all section headers
+    if (file_hdr.e_shnum > SH_CAPACITY) {
+        fprintf(stderr, "Not enough section header capacity for this file.\n");
+        fprintf(stderr, "Needed: %u, Available: %u\n", file_hdr.e_shnum, SH_CAPACITY);
+        return EXIT_FAILURE;
+    }
+    sh_readall();
+    // Set file offset to section header name string table
+    set_sh_name_str_tab_off();
+    set_section_names();
+    return EXIT_SUCCESS;
 }
